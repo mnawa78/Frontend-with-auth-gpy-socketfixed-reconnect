@@ -505,17 +505,18 @@ def heartbeat_check():
                 # Reset failure counter on successful heartbeat
                 connection_state["heartbeat_failures"] = 0
                 connection_state["last_heartbeat"] = datetime.now()
-                socketio.emit('heartbeat', {
-                    "status": "alive",
+                socketio.emit('connection_status', {
+                    "success":True,
+                    "message": "Connected to IBKR",
                     "timestamp": connection_state["last_heartbeat"].isoformat()
                 })
             else:
                 connection_state["heartbeat_failures"] += 1
                 app.logger.warning(f"Heartbeat failure #{connection_state['heartbeat_failures']}: {error['error'] if error else 'Unknown error'}")
                 
-                socketio.emit('heartbeat', {
-                    "status": "warning",
-                    "error": error['error'] if error else "Unknown error",
+                socketio.emit('connection_status', {
+                    "success":False,
+                    "message": "Disconnected from IBKR",
                     "consecutive_failures": connection_state["heartbeat_failures"],
                     "max_failures": MAX_HEARTBEAT_FAILURES
                 })
