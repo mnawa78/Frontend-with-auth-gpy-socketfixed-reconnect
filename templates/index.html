@@ -167,7 +167,7 @@
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
                             {% if session.is_admin %}
                             <li><a class="dropdown-item" href="{{ url_for('admin_users') }}">User Management</a></li>
-                            <li><a class="dropdown-item" href="{{ url_for('admin_api_keys') }}">API Key Management</a></li>
+                           <li><a class="dropdown-item" href="{{ url_for('admin_webhook_tokens') }}">Webhook Tokens</a></li>
                             <li><hr class="dropdown-divider"></li>
                             {% endif %}
                             <li><a class="dropdown-item" href="{{ url_for('change_password') }}">Change Password</a></li>
