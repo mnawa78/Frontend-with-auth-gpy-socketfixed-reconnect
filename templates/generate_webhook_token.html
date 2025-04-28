@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generate Webhook Token - IBKR Frontend</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        body {
+            padding-top: 20px;
+            background-color: #f8f9fa;
+        }
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .card-header {
+            font-weight: bold;
+            background-color: #f1f8ff;
+        }
+        .new-token {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            word-break: break-all;
+        }
+        .new-url {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            word-break: break-all;
+        }
+        .copy-btn {
+            cursor: pointer;
+        }
+        .navbar {
+            background-color: #343a40;
+            color: white;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .navbar .container {
+            padding: 8px 15px;
+        }
+        .navbar-brand {
+            font-weight: bold;
+            color: white;
+            text-decoration: none;
+            font-size: 1.25rem;
+        }
+        .navbar-nav {
+            display: flex;
+            align-items: center;
+        }
+        .nav-item {
+            margin-left: 15px;
+        }
+        .nav-link {
+            color: rgba(255,255,255,0.8);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .nav-link:hover {
+            color: white;
+        }
+        .dropdown-menu {
+            min-width: 200px;
+            margin-top: 10px;
+            border: none;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .dropdown-item {
+            padding: 8px 20px;
+        }
+        .dropdown-divider {
+            margin: 5px 0;
+        }
+        .navbar-container {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation bar for authentication -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="navbar-container">
+                <a class="navbar-brand" href="/">IBKR TradingView Connector</a>
+                <div class="user-info">
+                    <div class="dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" role="button" id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-person-circle"></i> {{ session.user_id }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+                            {% if session.is_admin %}
+                            <li><a class="dropdown-item" href="{{ url_for('admin_users') }}">User Management</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('admin_webhook_tokens') }}">Webhook Tokens</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            {% endif %}
+                            <li><a class="dropdown-item" href="{{ url_for('change_password') }}">Change Password</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="{{ url_for('logout') }}">Logout</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Home</a></li>
+                <li class="breadcrumb-item"><a href="{{ url_for('admin_webhook_tokens') }}">Webhook Token Management</a></li>
+                <li class="breadcrumb-item active" aria-current="page">Generate Token</li>
+            </ol>
+        </nav>
+        
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-key"></i> Generate New Webhook Token
+            </div>
+            <div class="card-body">
+                {% if error %}
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    {{ error }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                {% endif %}
+                
+                {% if success %}
+                <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    {{ success }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                
+                {% if new_token %}
+                <div class="alert alert-warning" role="alert">
+                    <i class="bi bi-exclamation-triangle"></i> Important: Make note of this token now. For security reasons, it won't be fully displayed again.
+                </div>
+                
+                <h5>Your new webhook token:</h5>
+                <div class="new-token">
+                    {{ new_token }}
+                    <i class="bi bi-clipboard copy-btn float-end" data-clipboard-text="{{ new_token }}" title="Copy token"></i>
+                </div>
+                
+                <h5>Complete webhook URL:</h5>
+                <div class="new-url">
+                    {{ webhook_url }}
+                    <i class="bi bi-clipboard copy-btn float-end" data-clipboard-text="{{ webhook_url }}" title="Copy URL"></i>
+                </div>
+                
+                <div class="alert alert-info" role="alert">
+                    <strong>Next steps:</strong>
+                    <ol>
+                        <li>Copy the webhook URL above</li>
+                        <li>In TradingView, go to Alert settings and select "Webhook" as the alert destination</li>
+                        <li>Paste the URL into the "Webhook URL" field</li>
+                        <li>Set your alert message in JSON format according to your strategy requirements</li>
+                    </ol>
+                </div>
+                {% endif %}
+                {% endif %}
+                
+                {% if not success %}
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="token_name" class="form-label">Token Name</label>
+                        <input type="text" class="form-control" id="token_name" name="token_name" placeholder="e.g., TradingView Primary Strategy" required>
+                        <div class="form-text">Give this token a descriptive name to identify its purpose.</div>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Generate Token</button>
+                        <a href="{{ url_for('admin_webhook_tokens') }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+                {% else %}
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('generate_webhook_token') }}" class="btn btn-primary">Generate Another Token</a>
+                    <a href="{{ url_for('admin_webhook_tokens') }}" class="btn btn-secondary">Back to Token Management</a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Simple clipboard functionality
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const text = this.getAttribute('data-clipboard-text');
+                navigator.clipboard.writeText(text).then(() => {
+                    this.classList.remove('bi-clipboard');
+                    this.classList.add('bi-check2');
+                    
+                    // Show a small "Copied!" tooltip
+                    const tooltip = document.createElement('span');
+                    tooltip.innerText = 'Copied!';
+                    tooltip.style.position = 'absolute';
+                    tooltip.style.backgroundColor = '#28a745';
+                    tooltip.style.color = 'white';
+                    tooltip.style.padding = '2px 6px';
+                    tooltip.style.borderRadius = '3px';
+                    tooltip.style.fontSize = '0.7rem';
+                    tooltip.style.right = '30px';
+                    this.parentNode.style.position = 'relative';
+                    this.parentNode.appendChild(tooltip);
+                    
+                    setTimeout(() => {
+                        this.classList.remove('bi-check2');
+                        this.classList.add('bi-clipboard');
+                        tooltip.remove();
+                    }, 2000);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
