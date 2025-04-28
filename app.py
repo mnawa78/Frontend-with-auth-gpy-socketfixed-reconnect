@@ -492,56 +492,75 @@ def status():
 
 # Add a heartbeat route to check server heartbeat
 @app.route('/heartbeat', methods=['GET'])
-def heartbeat():
-    """Simple endpoint to check server heartbeat"""
-    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()})
-
 def heartbeat_check():
-    """Background task to periodically check backend connectivity with enhanced error handling"""
+    """Background task to periodically check backend connectivity."""
     while connection_state["connected"]:
         try:
             result, error = send_backend_request("heartbeat", method="GET", timeout=5)
-            if not error and result:
-                # Reset failure counter on successful heartbeat
+
+            # === SUCCESS path: only when backend says connected=True ===
+            if not error and result and result.get("connected", False):
                 connection_state["heartbeat_failures"] = 0
                 connection_state["last_heartbeat"] = datetime.now()
-                socketio.emit('connection_status', {
-                    "success":True,
-                    "message": "Connected to IBKR",
-                    "timestamp": connection_state["last_heartbeat"].isoformat()
-                })
+
+                socketio.emit(
+                    "connection_status",
+                    {
+                        "success": True,
+                        "message": "Connected to IBKR",
+                        "timestamp": connection_state["last_heartbeat"].isoformat(),
+                    },
+                )
+
+            # === FAILURE path: either error or connected=False ===
             else:
                 connection_state["heartbeat_failures"] += 1
-                app.logger.warning(f"Heartbeat failure #{connection_state['heartbeat_failures']}: {error['error'] if error else 'Unknown error'}")
-                
-                socketio.emit('connection_status', {
-                    "success":False,
-                    "message": "Disconnected from IBKR",
-                    "consecutive_failures": connection_state["heartbeat_failures"],
-                    "max_failures": MAX_HEARTBEAT_FAILURES
-                })
-                
-                # Only mark as disconnected after multiple consecutive failures
+                app.logger.warning(
+                    f"Heartbeat failure "
+                    f"#{connection_state['heartbeat_failures']}: "
+                    f"{error.get('error') if error else 'Connected=False'}"
+                )
+
+                socketio.emit(
+                    "connection_status",
+                    {
+                        "success": False,
+                        "message": "Disconnected from IBKR",
+                        "consecutive_failures": connection_state["heartbeat_failures"],
+                        "max_failures": MAX_HEARTBEAT_FAILURES,
+                    },
+                )
+
                 if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES:
-                    app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Marking as temporarily disconnected.")
-                    # We do NOT set connection_state["connected"] = False here
-                    # Instead, we'll let the reconnection logic handle it
+                    app.logger.error(
+                        f"Maximum heartbeat failures reached "
+                        f"({MAX_HEARTBEAT_FAILURES}). Giving up until reconnect."
+                    )
                     break
+
         except Exception as e:
+            # Count this as a failure too
             connection_state["heartbeat_failures"] += 1
-            app.logger.error(f"Heartbeat check exception: {str(e)}")
-            
-            socketio.emit('heartbeat', {
-                "status": "error",
-                "error": str(e),
-                "consecutive_failures": connection_state["heartbeat_failures"],
-                "max_failures": MAX_HEARTBEAT_FAILURES
-            })
-            
+            app.logger.error(f"Heartbeat check exception: {e}")
+
+            # Emit connection_status instead of 'heartbeat'
+            socketio.emit(
+                "connection_status",
+                {
+                    "success": False,
+                    "message": f"Heartbeat error: {e}",
+                    "consecutive_failures": connection_state["heartbeat_failures"],
+                    "max_failures": MAX_HEARTBEAT_FAILURES,
+                },
+            )
+
             if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES:
-                app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Marking as temporarily disconnected.")
-                # Again, we do NOT set connection_state["connected"] = False here
+                app.logger.error(
+                    f"Maximum heartbeat failures reached "
+                    f"({MAX_HEARTBEAT_FAILURES}) in exception handler."
+                )
                 break
+
         
         # Wait 30 seconds before next check
         socketio.sleep(30)
