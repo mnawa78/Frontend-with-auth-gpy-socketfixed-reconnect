@@ -26,14 +26,14 @@ app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 # Improved SocketIO configuration with reconnection settings
 socketio = SocketIO(
     app, 
-    async_mode='gevent', 
+    async_mode=None,  # Let Flask-SocketIO choose the best mode
     cors_allowed_origins='*',
-    ping_timeout=60,    # Longer ping timeout
-    ping_interval=25,   # More frequent ping to detect connection issues
-    reconnection=True,  # Enable reconnection
-    reconnection_attempts=5,  # Attempt to reconnect 5 times
-    reconnection_delay=1,     # Start with 1 second delay
-    reconnection_delay_max=10 # Max 10 seconds between attempts
+    ping_timeout=60,
+    ping_interval=25,
+    reconnection=True,
+    reconnection_attempts=5,
+    reconnection_delay=1,
+    reconnection_delay_max=10
 )
 
 # Configuration from Heroku config vars
