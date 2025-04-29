@@ -577,8 +577,7 @@ def heartbeat_check():
             result, error = send_backend_request("heartbeat", method="GET", timeout=5)
             
             if not error and result:
-                # Reset failure counter on successful heartbeat
-                connection_state["heartbeat_failures"] = 0
+                # Update last backend heartbeat timestamp
                 connection_state["last_backend_heartbeat"] = datetime.now()
                 
                 # Check for IBKR status from backend response
@@ -601,6 +600,14 @@ def heartbeat_check():
                             "socket_connected": socket_state["connected"]
                         })
                 
+                # IMPORTANT CHANGE: Only reset heartbeat failures if both backend and IBKR are connected
+                if ibkr_status:
+                    connection_state["heartbeat_failures"] = 0
+                else:
+                    # Increment failures if IBKR is disconnected
+                    app.logger.warning("Backend is reachable but IBKR is disconnected")
+                    connection_state["heartbeat_failures"] += 1
+                
                 socketio.emit('heartbeat', {
                     "status": "alive",
                     "timestamp": connection_state["last_backend_heartbeat"].isoformat(),
@@ -617,11 +624,12 @@ def heartbeat_check():
                     "max_failures": MAX_HEARTBEAT_FAILURES,
                     "ibkr_connected": connection_state["ibkr_connected"]  # Keep previous status
                 })
-                
-                # Only try to reconnect after multiple consecutive failures
-                if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES and not connection_state["reconnect_in_progress"]:
-                    app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Attempting verification...")
-                    verify_and_reconnect()
+            
+            # Try to reconnect if either the backend is unreachable OR IBKR is disconnected
+            # after multiple consecutive failures
+            if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES and not connection_state["reconnect_in_progress"]:
+                app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Attempting verification...")
+                verify_and_reconnect()
             
         except Exception as e:
             connection_state["heartbeat_failures"] += 1
