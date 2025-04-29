@@ -46,12 +46,20 @@ MAX_HEARTBEAT_FAILURES = int(os.environ.get("MAX_HEARTBEAT_FAILURES", 3))
 # Store the last connection parameters for potential auto-reconnect
 last_connection_params = {}
 
-# Global state tracking
+# Global state tracking with separated concerns
 connection_state = {
-    "connected": False, 
-    "last_heartbeat": None,
-    "heartbeat_failures": 0,
-    "reconnect_in_progress": False
+    "ibkr_connected": False,        # True when backend reports IBKR is connected
+    "last_backend_heartbeat": None, # Last successful backend heartbeat
+    "heartbeat_failures": 0,        # Count of consecutive failures
+    "reconnect_in_progress": False, # Whether auto-reconnect is in progress
+    "last_ibkr_status": None        # Last known IBKR connection status from backend
+}
+
+# Socket connection is tracked separately
+socket_state = {
+    "connected": False,             # Current socket.io connection status
+    "last_connected": None,         # When socket was last connected
+    "clients": set()                # Set of connected socket client IDs
 }
 
 # User database (replace with a real database in production)
@@ -357,26 +365,41 @@ def connect_route():
     if missing_fields:
         error_msg = f"Missing required fields: {', '.join(missing_fields)}"
         app.logger.warning(f"Connection request missing fields: {error_msg}")
-        socketio.emit('connection_status', {"success": False, "message": error_msg})
+        socketio.emit('connection_status', {
+            "success": False, 
+            "message": error_msg,
+            "socket_connected": socket_state["connected"]
+        })
         return jsonify({"success": False, "message": error_msg}), 400
     
     # Make the backend request
     result, error = send_backend_request("connect", json_data=payload)
     
     if error:
-        socketio.emit('connection_status', {"success": False, "message": error['error']})
+        socketio.emit('connection_status', {
+            "success": False, 
+            "message": error['error'],
+            "socket_connected": socket_state["connected"]
+        })
         return jsonify({"success": False, "message": error['error']}), error['status_code']
     
     # If successful, update connection state and start heartbeat
     if result and result.get('success'):
-        connection_state["connected"] = True
-        connection_state["last_heartbeat"] = datetime.now()
+        connection_state["ibkr_connected"] = True
+        connection_state["last_ibkr_status"] = True
+        connection_state["last_backend_heartbeat"] = datetime.now()
         connection_state["heartbeat_failures"] = 0
         connection_state["reconnect_in_progress"] = False
+        
+        # Add socket_connected to the status
+        result["socket_connected"] = socket_state["connected"]
         socketio.emit('connection_status', result)
-        # Start the enhanced heartbeat check in a background task
+        
+        # Start the enhanced heartbeat check if not already running
         socketio.start_background_task(target=start_heartbeat_check)
     else:
+        # Add socket_connected to the status
+        result["socket_connected"] = socket_state["connected"]
         socketio.emit('connection_status', result)
     
     return jsonify(result)
@@ -390,11 +413,19 @@ def disconnect_route():
     result, error = send_backend_request("disconnect")
     
     if error:
-        socketio.emit('connection_status', {"success": False, "message": error['error']})
+        socketio.emit('connection_status', {
+            "success": False, 
+            "message": error['error'],
+            "socket_connected": socket_state["connected"]
+        })
         return jsonify({"success": False, "message": error['error']}), error['status_code']
     
     # Update connection state
-    connection_state["connected"] = False
+    connection_state["ibkr_connected"] = False
+    connection_state["last_ibkr_status"] = False
+    
+    # Add socket_connected to the status
+    result["socket_connected"] = socket_state["connected"]
     socketio.emit('connection_status', result)
     
     return jsonify(result)
@@ -463,21 +494,36 @@ def status():
         return jsonify({
             "frontend": "running",
             "backend_configured": False,
-            "message": "Backend URL not configured"
+            "message": "Backend URL not configured",
+            "socket_connected": socket_state["connected"]
         })
     
     try:
         result, error = send_backend_request("", method="GET", timeout=5)
         backend_status = "running" if not error else "unreachable"
         
+        # If backend is reachable, also get the IBKR status
+        ibkr_status = connection_state["ibkr_connected"]
+        if not error and backend_status == "running":
+            # Try to get the current IBKR status from backend
+            ibkr_result, ibkr_error = send_backend_request("heartbeat", method="GET", timeout=5)
+            if not ibkr_error and ibkr_result and "connected_to_ibkr" in ibkr_result:
+                ibkr_status = ibkr_result["connected_to_ibkr"]
+                # Update our state if it's different
+                if connection_state["ibkr_connected"] != ibkr_status:
+                    connection_state["ibkr_connected"] = ibkr_status
+                    connection_state["last_ibkr_status"] = ibkr_status
+        
         return jsonify({
             "frontend": "running",
             "backend": backend_status,
             "backend_configured": True,
-            "connected_to_ibkr": connection_state["connected"],
-            "last_heartbeat": connection_state["last_heartbeat"].isoformat() if connection_state["last_heartbeat"] else None,
+            "connected_to_ibkr": ibkr_status,
+            "last_heartbeat": connection_state["last_backend_heartbeat"].isoformat() if connection_state["last_backend_heartbeat"] else None,
             "heartbeat_failures": connection_state["heartbeat_failures"],
-            "reconnect_in_progress": connection_state["reconnect_in_progress"]
+            "reconnect_in_progress": connection_state["reconnect_in_progress"],
+            "socket_connected": socket_state["connected"],
+            "socket_clients": len(socket_state["clients"])
         })
     except Exception as e:
         app.logger.error(f"Status check error: {str(e)}")
@@ -485,29 +531,80 @@ def status():
             "frontend": "running",
             "backend": "error",
             "backend_configured": True,
-            "connected_to_ibkr": connection_state["connected"],
+            "connected_to_ibkr": connection_state["ibkr_connected"],
             "heartbeat_failures": connection_state["heartbeat_failures"],
+            "error": str(e),
+            "socket_connected": socket_state["connected"]
+        })
+
+# Enhanced heartbeat route to include IBKR status
+@app.route('/heartbeat', methods=['GET'])
+def heartbeat():
+    """Enhanced endpoint to check server heartbeat and IBKR status"""
+    try:
+        # Get IBKR connection status from backend if possible
+        result, error = send_backend_request("heartbeat", method="GET", timeout=5)
+        ibkr_connected = False
+        
+        if not error and result and "connected_to_ibkr" in result:
+            ibkr_connected = result["connected_to_ibkr"]
+            # Update our internal state if it's different
+            if connection_state["ibkr_connected"] != ibkr_connected:
+                connection_state["ibkr_connected"] = ibkr_connected
+                connection_state["last_ibkr_status"] = ibkr_connected
+        else:
+            # Use our internal state if we can't get from backend
+            ibkr_connected = connection_state["ibkr_connected"]
+        
+        return jsonify({
+            "status": "alive", 
+            "timestamp": datetime.now().isoformat(),
+            "connected_to_ibkr": ibkr_connected
+        })
+    except Exception as e:
+        app.logger.error(f"Heartbeat error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "connected_to_ibkr": connection_state["ibkr_connected"],
             "error": str(e)
         })
 
-# Add a heartbeat route to check server heartbeat
-@app.route('/heartbeat', methods=['GET'])
-def heartbeat():
-    """Simple endpoint to check server heartbeat"""
-    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()})
-
 def heartbeat_check():
-    """Background task to periodically check backend connectivity with enhanced error handling"""
-    while connection_state["connected"]:
+    """Enhanced background task to periodically check backend connectivity with focus on IBKR status"""
+    while True:  # Always keep running, don't depend on connection_state["ibkr_connected"]
         try:
             result, error = send_backend_request("heartbeat", method="GET", timeout=5)
+            
             if not error and result:
                 # Reset failure counter on successful heartbeat
                 connection_state["heartbeat_failures"] = 0
-                connection_state["last_heartbeat"] = datetime.now()
+                connection_state["last_backend_heartbeat"] = datetime.now()
+                
+                # Check for IBKR status from backend response
+                # The backend should return 'connected_to_ibkr' in its response
+                ibkr_status = False
+                if "connected_to_ibkr" in result:
+                    ibkr_status = result["connected_to_ibkr"]
+                    
+                    # Only update the UI if the status has changed
+                    if connection_state["last_ibkr_status"] != ibkr_status:
+                        app.logger.info(f"IBKR connection status changed: {connection_state['last_ibkr_status']} -> {ibkr_status}")
+                        connection_state["ibkr_connected"] = ibkr_status
+                        connection_state["last_ibkr_status"] = ibkr_status
+                        
+                        # Broadcast status change to all connected clients
+                        socketio.emit('connection_status', {
+                            "success": ibkr_status,
+                            "message": "Connected to IBKR" if ibkr_status else "Not Connected to IBKR",
+                            "reconnect_in_progress": connection_state["reconnect_in_progress"],
+                            "socket_connected": socket_state["connected"]
+                        })
+                
                 socketio.emit('heartbeat', {
                     "status": "alive",
-                    "timestamp": connection_state["last_heartbeat"].isoformat()
+                    "timestamp": connection_state["last_backend_heartbeat"].isoformat(),
+                    "ibkr_connected": ibkr_status
                 })
             else:
                 connection_state["heartbeat_failures"] += 1
@@ -517,15 +614,15 @@ def heartbeat_check():
                     "status": "warning",
                     "error": error['error'] if error else "Unknown error",
                     "consecutive_failures": connection_state["heartbeat_failures"],
-                    "max_failures": MAX_HEARTBEAT_FAILURES
+                    "max_failures": MAX_HEARTBEAT_FAILURES,
+                    "ibkr_connected": connection_state["ibkr_connected"]  # Keep previous status
                 })
                 
-                # Only mark as disconnected after multiple consecutive failures
-                if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES:
-                    app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Marking as temporarily disconnected.")
-                    # We do NOT set connection_state["connected"] = False here
-                    # Instead, we'll let the reconnection logic handle it
-                    break
+                # Only try to reconnect after multiple consecutive failures
+                if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES and not connection_state["reconnect_in_progress"]:
+                    app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Attempting verification...")
+                    verify_and_reconnect()
+            
         except Exception as e:
             connection_state["heartbeat_failures"] += 1
             app.logger.error(f"Heartbeat check exception: {str(e)}")
@@ -534,165 +631,148 @@ def heartbeat_check():
                 "status": "error",
                 "error": str(e),
                 "consecutive_failures": connection_state["heartbeat_failures"],
-                "max_failures": MAX_HEARTBEAT_FAILURES
+                "max_failures": MAX_HEARTBEAT_FAILURES,
+                "ibkr_connected": connection_state["ibkr_connected"]  # Keep previous status
             })
             
-            if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES:
-                app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Marking as temporarily disconnected.")
-                # Again, we do NOT set connection_state["connected"] = False here
-                break
+            if connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES and not connection_state["reconnect_in_progress"]:
+                app.logger.error(f"Maximum heartbeat failures reached ({MAX_HEARTBEAT_FAILURES}). Attempting verification...")
+                verify_and_reconnect()
         
-        # Wait 30 seconds before next check
+        # Wait before next check - should be at least 30 seconds to avoid too frequent checks
         socketio.sleep(30)
 
 def start_heartbeat_check():
-    """
-    Enhanced heartbeat check with auto-recovery capabilities.
-    This runs in a continuous loop that handles both initial connection monitoring
-    and attempts to recover from temporary disconnections.
-    """
-    while True:
-        # If we're connected, run the regular heartbeat check
-        if connection_state["connected"]:
-            heartbeat_check()
+    """Start the continuous heartbeat check without the reconnection logic"""
+    socketio.start_background_task(target=heartbeat_check)
+
+def verify_and_reconnect():
+    """Verify IBKR connection and attempt reconnection if needed"""
+    # Only proceed if we're not already trying to reconnect
+    if connection_state["reconnect_in_progress"]:
+        return
+        
+    connection_state["reconnect_in_progress"] = True
+    socketio.emit('connection_status', {
+        "success": connection_state["ibkr_connected"],
+        "message": "Verifying connection status...",
+        "verifying": True,
+        "socket_connected": socket_state["connected"]
+    })
+    
+    try:
+        # Check if backend is still alive
+        backend_result, backend_error = send_backend_request("", method="GET", timeout=10)
+        
+        if not backend_error:
+            # Backend is responding, try to check actual connection status
+            verify_result, verify_error = send_backend_request("verify_connection", timeout=10)
             
-            # If we exit the heartbeat check but still think we're connected,
-            # it means we hit the max failures but haven't actually marked as disconnected yet
-            if connection_state["connected"] and connection_state["heartbeat_failures"] >= MAX_HEARTBEAT_FAILURES:
-                app.logger.info("Heartbeat check failed but connection may still be active. Attempting verification...")
+            if not verify_error and verify_result:
+                # Get the actual IBKR connection status
+                ibkr_status = verify_result.get('connected', False)
                 
-                # Instead of immediately marking as disconnected, verify the connection
-                connection_state["reconnect_in_progress"] = True
-                socketio.emit('connection_status', {
-                    "success": True,
-                    "message": "Verifying connection status...",
-                    "verifying": True
-                })
+                # Update our connection status
+                connection_state["ibkr_connected"] = ibkr_status
+                connection_state["last_ibkr_status"] = ibkr_status
                 
-                # Try a deeper connection check to see if we're really disconnected
-                try:
-                    # Check if backend is still alive
-                    backend_result, backend_error = send_backend_request("", method="GET", timeout=10)
+                if ibkr_status:
+                    # We're actually still connected! Reset the heartbeat failure counter
+                    app.logger.info("Connection verification successful - IBKR is connected!")
+                    connection_state["heartbeat_failures"] = 0
+                    connection_state["last_backend_heartbeat"] = datetime.now()
+                    connection_state["reconnect_in_progress"] = False
                     
-                    if not backend_error:
-                        # Backend is responding, try to check actual connection status
-                        verify_result, verify_error = send_backend_request("verify_connection", timeout=10)
-                        
-                        if not verify_error and verify_result and verify_result.get('connected', False):
-                            # We're actually still connected! Reset the heartbeat failure counter
-                            app.logger.info("Connection verification successful - we're still connected!")
-                            connection_state["heartbeat_failures"] = 0
-                            connection_state["last_heartbeat"] = datetime.now()
-                            connection_state["reconnect_in_progress"] = False
-                            
-                            socketio.emit('connection_status', {
-                                "success": True,
-                                "message": "Connection verified successfully",
-                                "verified": True
-                            })
-                            
-                            # Continue with normal heartbeat checks
-                            continue
-                        else:
-                            # Backend says we're not connected
-                            app.logger.warning("Backend reports we are not connected. Trying to reconnect...")
-                    else:
-                        app.logger.warning(f"Backend verification failed with error: {backend_error['error']}")
-                        
-                except Exception as e:
-                    app.logger.error(f"Connection verification failed: {str(e)}")
-                
-                # If we get here, we need to try reconnecting
+                    socketio.emit('connection_status', {
+                        "success": True,
+                        "message": "IBKR connection verified successfully",
+                        "verified": True,
+                        "socket_connected": socket_state["connected"]
+                    })
+                    return
+                else:
+                    # IBKR is not connected according to backend
+                    app.logger.warning("Backend reports IBKR is not connected. Trying to reconnect...")
+                    try_reconnect()
+            else:
+                # Verification failed
+                app.logger.warning(f"IBKR connection verification failed with error: {verify_error['error'] if verify_error else 'Unknown error'}")
                 try_reconnect()
-        
-        # If we're not connected or reconnection is in progress, wait before checking again
-        socketio.sleep(30)
-        
-        # After waiting, check if we should attempt auto-reconnect 
-        if not connection_state["connected"] and not connection_state["reconnect_in_progress"]:
+        else:
+            app.logger.warning(f"Backend verification failed with error: {backend_error['error']}")
+            # Backend is unreachable, but we'll try reconnecting anyway
             try_reconnect()
+            
+    except Exception as e:
+        app.logger.error(f"Connection verification failed: {str(e)}")
+        try_reconnect()
+    finally:
+        # Make sure we reset the reconnect flag if something went wrong
+        if connection_state["reconnect_in_progress"]:
+            connection_state["reconnect_in_progress"] = False
 
 def try_reconnect():
     """Attempt to reconnect to backend using stored connection parameters"""
     global last_connection_params
     
-    # Mark that we're attempting to reconnect
-    connection_state["reconnect_in_progress"] = True
+    if not connection_state["reconnect_in_progress"]:
+        connection_state["reconnect_in_progress"] = True
     
-    # Notify UI that we're attempting to reconnect
     socketio.emit('connection_status', {
-        "success": False,
-        "message": "Connection lost. Attempting to reconnect...",
-        "reconnecting": True
+        "success": connection_state["ibkr_connected"],
+        "message": "Connection lost or unstable. Attempting to reconnect...",
+        "reconnecting": True,
+        "socket_connected": socket_state["connected"]
     })
     
-    # Check if backend is accessible before attempting reconnect
-    app.logger.info("Checking if backend is accessible before reconnect attempt...")
-    try:
-        backend_check, error = send_backend_request("", method="GET", timeout=5)
-        
-        if error:
-            app.logger.error(f"Backend not accessible for reconnect: {error['error']}")
-            connection_state["reconnect_in_progress"] = False
-            socketio.emit('connection_status', {
-                "success": False,
-                "message": f"Reconnect failed: Backend not accessible ({error['error']})",
-                "reconnecting": False
-            })
-            return
-            
-        # If we have stored connection parameters, try to reconnect
-        if last_connection_params and all(last_connection_params.values()):
-            app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
-            
-            # Attempt to reconnect using the stored parameters
-            result, error = send_backend_request("connect", json_data=last_connection_params)
-            
-            if error:
-                app.logger.error(f"Auto-reconnect failed: {error['error']}")
-                connection_state["reconnect_in_progress"] = False
-                socketio.emit('connection_status', {
-                    "success": False,
-                    "message": f"Auto-reconnect failed: {error['error']}",
-                    "reconnecting": False
-                })
-            elif result and result.get('success'):
-                app.logger.info("Auto-reconnect successful!")
-                connection_state["connected"] = True
-                connection_state["last_heartbeat"] = datetime.now()
-                connection_state["heartbeat_failures"] = 0
-                connection_state["reconnect_in_progress"] = False
-                
-                socketio.emit('connection_status', {
-                    "success": True,
-                    "message": "Auto-reconnect successful",
-                    "reconnected": True
-                })
-            else:
-                app.logger.warning(f"Auto-reconnect received unexpected response: {json.dumps(result)}")
-                connection_state["reconnect_in_progress"] = False
-                socketio.emit('connection_status', {
-                    "success": False,
-                    "message": "Auto-reconnect failed with unexpected response from backend",
-                    "reconnecting": False,
-                    "details": result
-                })
-        else:
-            app.logger.warning("No stored connection parameters available for auto-reconnect")
-            connection_state["reconnect_in_progress"] = False
-            socketio.emit('connection_status', {
-                "success": False,
-                "message": "Cannot auto-reconnect: No stored connection parameters",
-                "reconnecting": False
-            })
-            
-    except Exception as e:
-        app.logger.error(f"Auto-reconnect attempt failed with exception: {str(e)}")
+    # Check if we have connection params
+    if not last_connection_params or not all(last_connection_params.values()):
+        app.logger.warning("No stored connection parameters available for auto-reconnect")
         connection_state["reconnect_in_progress"] = False
         socketio.emit('connection_status', {
-            "success": False,
-            "message": f"Auto-reconnect failed with error: {str(e)}",
-            "reconnecting": False
+            "success": connection_state["ibkr_connected"],
+            "message": "Cannot auto-reconnect: No stored connection parameters",
+            "reconnecting": False,
+            "socket_connected": socket_state["connected"]
+        })
+        return
+    
+    # Attempt to reconnect using the stored parameters
+    app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
+    result, error = send_backend_request("connect", json_data=last_connection_params)
+    
+    if error:
+        app.logger.error(f"Auto-reconnect failed: {error['error']}")
+        connection_state["reconnect_in_progress"] = False
+        socketio.emit('connection_status', {
+            "success": connection_state["ibkr_connected"],  # Keep previous status
+            "message": f"Auto-reconnect failed: {error['error']}",
+            "reconnecting": False,
+            "socket_connected": socket_state["connected"]
+        })
+    elif result and result.get('success'):
+        app.logger.info("Auto-reconnect successful!")
+        connection_state["ibkr_connected"] = True
+        connection_state["last_ibkr_status"] = True
+        connection_state["last_backend_heartbeat"] = datetime.now()
+        connection_state["heartbeat_failures"] = 0
+        connection_state["reconnect_in_progress"] = False
+        
+        socketio.emit('connection_status', {
+            "success": True,
+            "message": "Auto-reconnect successful",
+            "reconnected": True,
+            "socket_connected": socket_state["connected"]
+        })
+    else:
+        app.logger.warning(f"Auto-reconnect received unexpected response: {json.dumps(result)}")
+        connection_state["reconnect_in_progress"] = False
+        socketio.emit('connection_status', {
+            "success": connection_state["ibkr_connected"],  # Keep previous status
+            "message": "Auto-reconnect failed with unexpected response from backend",
+            "reconnecting": False,
+            "socket_connected": socket_state["connected"],
+            "details": result
         })
 
 # Socket.IO event handlers
@@ -706,17 +786,32 @@ def socket_connect():
         disconnect()
         return
     
+    # Update socket state
+    socket_state["connected"] = True
+    socket_state["last_connected"] = datetime.now()
+    socket_state["clients"].add(request.sid)
+    
     # Send initial connection state to newly connected clients
     emit('connection_status', {
-        "success": connection_state["connected"],
-        "message": "Connected to IBKR" if connection_state["connected"] else "Not Connected",
+        "success": connection_state["ibkr_connected"],
+        "message": "Connected to IBKR" if connection_state["ibkr_connected"] else "Not Connected",
         "reconnect_in_progress": connection_state["reconnect_in_progress"],
-        "heartbeat_failures": connection_state["heartbeat_failures"]
+        "heartbeat_failures": connection_state["heartbeat_failures"],
+        "socket_connected": True
     })
 
 @socketio.on('disconnect')
 def socket_disconnect():
     app.logger.info(f"Socket.IO client disconnected: {request.sid}")
+    # Remove client from tracked clients
+    if request.sid in socket_state["clients"]:
+        socket_state["clients"].remove(request.sid)
+    
+    # Update socket state
+    if len(socket_state["clients"]) == 0:
+        socket_state["connected"] = False
+    
+    # Note: We do NOT change the IBKR connection status here
 
 @socketio.on('force_reconnect')
 def force_reconnect():
@@ -729,12 +824,19 @@ def force_reconnect():
         
     app.logger.info(f"Manual reconnect requested by client: {request.sid}")
     if not connection_state["reconnect_in_progress"]:
-        socketio.start_background_task(target=try_reconnect)
+        socketio.emit('connection_status', {
+            "success": connection_state["ibkr_connected"],
+            "message": "Initiating reconnection...",
+            "reconnecting": True,
+            "socket_connected": socket_state["connected"]
+        })
+        socketio.start_background_task(target=verify_and_reconnect)
     else:
         emit('connection_status', {
-            "success": False,
+            "success": connection_state["ibkr_connected"],
             "message": "Reconnection already in progress",
-            "reconnecting": True
+            "reconnecting": True,
+            "socket_connected": socket_state["connected"]
         })
 
 @socketio.on_error()
