@@ -679,7 +679,7 @@ def verify_and_reconnect():
     
     try:
         # Check if backend is still alive
-        backend_result, backend_error = send_backend_request("", method="GET", timeout=10)
+        backend_result, backend_error = send_backend_request("heartbeat", method="GET", timeout=10)
         
         if not backend_error:
             # Backend is responding, try to check actual connection status
@@ -808,14 +808,14 @@ def socket_connect():
     socket_state["last_connected"] = datetime.now()
     socket_state["clients"].add(request.sid)
     
-    # Send initial connection state to newly connected clients
-    emit('connection_status', {
-        "success": connection_state["ibkr_connected"],
-        "message": "Connected to IBKR" if connection_state["ibkr_connected"] else "Not Connected",
-        "reconnect_in_progress": connection_state["reconnect_in_progress"],
-        "heartbeat_failures": connection_state["heartbeat_failures"],
-        "socket_connected": True
-    })
+    # Send initial connection state to newly connected clients: Skipping initial emit here to avoid sending stale “Not Connected”
+    # emit('connection_status', {
+    #    "success": connection_state["ibkr_connected"],
+    #    "message": "Connected to IBKR" if connection_state["ibkr_connected"] else "Not Connected",
+    #    "reconnect_in_progress": connection_state["reconnect_in_progress"],
+    #    "heartbeat_failures": connection_state["heartbeat_failures"],
+    #    "socket_connected": True
+    # })
 
 @socketio.on('disconnect')
 def socket_disconnect():
