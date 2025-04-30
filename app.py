@@ -508,7 +508,7 @@ def status():
         })
     
     try:
-        result, error = send_backend_request("", method="GET", timeout=5)
+        result, error = send_backend_request("heartbeat", method="GET", timeout=5)
         backend_status = "running" if not error else "unreachable"
         
         # If backend is reachable, also get the IBKR status
