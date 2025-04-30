@@ -106,9 +106,10 @@ def initialize_admin_user():
             "created_at": datetime.now().isoformat(),
             "created_by": "system"
         }
-
-# Start the continuous heartbeat loop as soon as the app comes up
-socketio.start_background_task(target=start_heartbeat_check)
+        
+    # START HEARTBEAT LOOP ONCE AT FIRST REQUEST
+    app.logger.info("Spawning heartbeat background task")
+    socketio.start_background_task(target=start_heartbeat_check)
 
 
 
