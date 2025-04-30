@@ -107,6 +107,11 @@ def initialize_admin_user():
             "created_by": "system"
         }
 
+# Start the continuous heartbeat loop as soon as the app comes up
+socketio.start_background_task(target=start_heartbeat_check)
+
+
+
 # User management routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
