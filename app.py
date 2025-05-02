@@ -759,9 +759,10 @@ def try_reconnect():
     # result, error = send_backend_request("connect", json_data=last_connection_params)
     
     # Attempt to reconnect using the stored parameters (send as form data so Flask can read request.form)
+    # Attempt to reconnect using the stored parameters (send as JSON to the IBKR connector)
     app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
-    result, error = send_backend_request("connect", form_data=last_connection_params)
-
+    # result, error = send_backend_request("connect", form_data=last_connection_params)
+    result, error = send_backend_request("connect", json_data=last_connection_params)
 
 
     if error:
