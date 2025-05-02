@@ -382,7 +382,7 @@ def connect_route():
         return jsonify({"success": False, "message": error_msg}), 400
     
     # Make the backend request
-    result, error = send_backend_request("connect", form_data=payload)
+    result, error = send_backend_request("connect", json_data=payload)
     
     if error:
         socketio.emit('connection_status', {
@@ -763,11 +763,11 @@ def try_reconnect():
     
     # Attempt to reconnect using the stored parameters
     app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
-    # result, error = send_backend_request("connect", form_data=last_connection_params)
+    # result, error = send_backend_request("connect", json_data=last_connection_params)
     result, error = send_backend_request(
         "connect",
         method="POST",
-        form_data=last_connection_params
+        json_data=last_connection_params
     )
 
 
