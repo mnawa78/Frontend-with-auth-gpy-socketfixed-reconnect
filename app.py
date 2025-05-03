@@ -324,15 +324,25 @@ def send_backend_request(endpoint, method="POST", json_data=None, form_data=None
     app.logger.info(f"Sending {method} request to backend: {url}")
     
     try:
-        if method.upper() == "POST":
-            if json_data:
+        # if method.upper() == "POST":
+        #    if json_data:
+        #        response = requests.post(url, json=json_data, headers=headers, timeout=timeout)
+        #    elif form_data:
+        #        response = requests.post(url, data=form_data, headers=headers, timeout=timeout)
+        #    else:
+        #        response = requests.post(url, headers=headers, timeout=timeout)
+        #else:
+        #    response = requests.get(url, headers=headers, timeout=timeout)
+
+       if method.upper() == "POST":
+            # always prefer JSON if provided, even if empty dict
+            if json_data is not None:
                 response = requests.post(url, json=json_data, headers=headers, timeout=timeout)
-            elif form_data:
+            elif form_data is not None:
                 response = requests.post(url, data=form_data, headers=headers, timeout=timeout)
             else:
                 response = requests.post(url, headers=headers, timeout=timeout)
-        else:
-            response = requests.get(url, headers=headers, timeout=timeout)
+
             
         response.raise_for_status()
         return response.json(), None
