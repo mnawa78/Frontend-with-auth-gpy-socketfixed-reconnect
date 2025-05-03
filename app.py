@@ -334,18 +334,21 @@ def send_backend_request(endpoint, method="POST", json_data=None, form_data=None
         #else:
         #    response = requests.get(url, headers=headers, timeout=timeout)
 
-       if method.upper() == "POST":
-            # always prefer JSON if provided, even if empty dict
+     if method.upper() == "POST":
+            # always prefer JSON if provided, even empty dict
             if json_data is not None:
                 response = requests.post(url, json=json_data, headers=headers, timeout=timeout)
             elif form_data is not None:
                 response = requests.post(url, data=form_data, headers=headers, timeout=timeout)
             else:
                 response = requests.post(url, headers=headers, timeout=timeout)
+        else:
+            response = requests.get(url, headers=headers, timeout=timeout)
 
-            
+        # <— notice this lines up with the if/else above, not with the inner clauses
         response.raise_for_status()
         return response.json(), None
+    
     except requests.exceptions.Timeout:
         error_msg = f"Request to backend timed out after {timeout}s."
         app.logger.error(error_msg)
