@@ -19,6 +19,18 @@ from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 import redis
 
+# at the very top of app.py
+heartbeat_started = False
+
+def spawn_heartbeat_once():
+    global heartbeat_started
+    if not heartbeat_started:
+        app.logger.info("Spawning heartbeat background task")
+        socketio.start_background_task(target=start_heartbeat_check)
+        heartbeat_started = True
+
+
+
 # pick up the Redis Cloud URL from Heroku config
 REDIS_URL = os.environ.get("REDISCLOUD_URL")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -130,7 +142,7 @@ def initialize_admin_user():
     # app.logger.info("Spawning heartbeat background task")
     # socketio.start_background_task(target=start_heartbeat_check)
 
-
+    spawn_heartbeat_once()
 
 # User management routes
 @app.route('/login', methods=['GET', 'POST'])
