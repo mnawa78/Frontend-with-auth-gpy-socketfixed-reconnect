@@ -8,3 +8,4 @@ requests==2.26.0
 Werkzeug==2.0.1
 dnspython==2.0.0
 gevent==22.10.2
+gevent-websocket==0.10.1
