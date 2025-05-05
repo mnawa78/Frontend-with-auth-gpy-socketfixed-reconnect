@@ -1,5 +1,7 @@
-import eventlet
-eventlet.monkey_patch()
+# import eventlet
+# eventlet.monkey_patch()
+from gevent import monkey
+monkey.patch_all()
 
 
 
