@@ -66,7 +66,7 @@ DEFAULT_TIMEOUT = int(os.environ.get("DEFAULT_TIMEOUT", 60))
 # Max consecutive heartbeat failures before considering disconnected
 MAX_HEARTBEAT_FAILURES = int(os.environ.get("MAX_HEARTBEAT_FAILURES", 3))
 # Store the last connection parameters for potential auto-reconnect
-last_connection_params = {}
+# last_connection_params = {}
 
 # Global state tracking with separated concerns
 connection_state = {
@@ -421,9 +421,17 @@ def connect_route():
         return jsonify({"success": False, "message": error["error"]}), error["status_code"]
 
     # 4) Only *after* the connector has accepted it do we stash for auto-reconnect
-    global last_connection_params
-    last_connection_params = payload.copy()
-    app.logger.info(f"Storing connection params for auto-reconnect: {last_connection_params!r}")
+    # global last_connection_params
+    # last_connection_params = payload.copy()
+    # app.logger.info(f"Storing connection params for auto-reconnect: {last_connection_params!r}")
+    # 4) Persist to Redis so all dynos/workers can reuse
+    save_params(payload)
+    app.logger.info(f"Saved connection params to Redis: {payload!r}")
+
+
+
+
+
 
     # 5) Tell the front-end it worked
     socketio.emit('connection_status', {
@@ -779,7 +787,7 @@ def verify_and_reconnect():
 
 def try_reconnect():
     """Attempt to reconnect to backend using stored connection parameters"""
-    global last_connection_params
+    # global last_connection_params
     
     if not connection_state["reconnect_in_progress"]:
         connection_state["reconnect_in_progress"] = True
@@ -802,8 +810,13 @@ def try_reconnect():
     #        "socket_connected": socket_state["connected"]
     #    })
     #   return
-    if not last_connection_params or not all(last_connection_params.values()):
-        app.logger.warning("Cannot auto-reconnect: no stored connection parameters")
+    # if not last_connection_params or not all(last_connection_params.values()):
+    #    app.logger.warning("Cannot auto-reconnect: no stored connection parameters")
+
+    # Load the params we saved earlier
+    params = load_params()
+    if not params:
+        app.logger.warning("Cannot auto-reconnect: no stored connection parameters in Redis")
         connection_state["reconnect_in_progress"] = False
         socketio.emit('connection_status', {
             "success": False,
@@ -815,12 +828,18 @@ def try_reconnect():
 
    
     # Attempt to reconnect using the stored parameters
-    app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
+    # app.logger.info(f"Attempting automatic reconnect with stored parameters: {json.dumps(last_connection_params)}")
     # result, error = send_backend_request("connect", json_data=last_connection_params)
+    # result, error = send_backend_request(
+    #    "connect",
+    #    method="POST",
+    #    json_data=last_connection_params
+    # )
+    app.logger.info(f"Attempting automatic reconnect with stored parameters: {params!r}")
     result, error = send_backend_request(
         "connect",
         method="POST",
-        json_data=last_connection_params
+        json_data=params
     )
 
    
